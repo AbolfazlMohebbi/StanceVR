@@ -1,49 +1,74 @@
 ﻿using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
-using System;
 using UnityEngine.VR;
+using System;
+using System.IO;
+using System.Linq;
+
 
 public class CamRotation1 : MonoBehaviour {
 
     public HeadTrackingInfo trackingInfo;
-    Camera camVR;
-    private float x_cam, y_cam, z_cam, xEuler, yEuler, zEuler, OriX;
-    
+    private Quaternion startRot;
+    private float xEuler, yEuler, zEuler, deltaXori, deltaXori_init, xEulerPrevious, xEulerInit;
+    private float Time_0;
+    private float toRad, toDeg;
+    private int Counter;
+    private string prbsRes;
+
+    // Magnified Motion Vars:
+    private float MagnifyOri;
+
+    // Step Response Vars:
+    private float stepAmpilitude;
+    private int stepStartTimeFrame, stepEndTimeFrame, stepTimeFrame;
+
+    // Sinosoidal Vars:
+    private float Amplitude, frequency;
+
+    //PRBS Vars:
+    private float prbsAmpilitude;
+    private int prbsTimeFrame;
+    private int iCount;
+    private int PrbsElementInt, previousPrbsElementInt;
+
     private int flagExpNum;  // 0: Normal VR  1: Disabled Head-tracking  2: Magnify Rotation  3: Step-response (5 and 10 deg.) 4: Sinusoidal Perturbations
-    private int timeFrame, Stepflag;
-    //SteamVR_TestTrackedCamera VRcam;
-    //SteamVR_Camera VRcam;
+
 
     // Use this for initialization
-    void Start() {
-        x_cam = 0.0f;
-        y_cam = 0.0f;
-        z_cam = 0.0f;
+    void Start()
+    {
+        MCCDAQwrap.flashLED();
+        MCCDAQwrap.writeVolts(1, 0.0f);  // Set all voltages to zero
+
         xEuler = 0.0f;
         yEuler = 0.0f;
         zEuler = 0.0f;
-        //OriX = 0.0f;
-        OriX = trackingInfo.headOriX;
-        timeFrame = 0;
-        Stepflag = 0;
-        //print("headOriX: " + transform.rotation.eulerAngles.x);
-        //VRcam = gameObject.GetComponent<SteamVR_Camera>();
-        //transform.rotation = Quaternion.Inverse(InputTracking.GetLocalRotation(VRNode.CenterEye));
-        //transform.Rotate(new Vector3(0, -90, 0));
-        //Quaternion Q1;
-        //Q1 = InputTracking.GetLocalRotation(VRNode.CenterEye);
-        //print("Q1" + Q1);
+        deltaXori = 0.0f;
+
+        stepTimeFrame = 0;
+        flagExpNum = 2;  // 0: Normal VR  1: Disabled Head-tracking  2: Magnify Rotation  3: Step-response (5 and 10 deg.) 4: Sinusoidal Perturbations  5: PRBS
+        Time_0 = 4.0f;   //Start perturbations after this time seconds
+
+        startRot = transform.rotation;
+        
+        Counter = 0;
+
+        toRad = (3.14f / 180.0f);
+        toDeg = (180.0f / 3.14f);
+
+        prbsRes = PRBS_General();
+        iCount = 0;
     }
+
 
     // Update is called once per frame
     void Update() {
 
-        timeFrame = timeFrame + 1;
-
-        if (Time.time > 10.0f)  //Perturbation wait time
+        if (Time.time > Time_0)  //Perturbation wait time
         {
-            flagExpNum = 4;  // 0: Normal VR  1: Disabled Head-tracking  2: Magnify Rotation  3: Step-response (5 and 10 deg.) 4: Sinusoidal Perturbations     
+            MCCDAQwrap.writeVolts(1, 5.0f);   // Send start vision perturbation signal of 5v. 
 
             switch (flagExpNum)
             {
@@ -54,70 +79,121 @@ public class CamRotation1 : MonoBehaviour {
 
                 case 1:   //head tracking disabled
                     {
-                        transform.rotation = Quaternion.Inverse(InputTracking.GetLocalRotation(VRNode.CenterEye));
-                        //transform.position = -InputTracking.GetLocalPosition(VRNode.CenterEye);
-                        //InputTracking.disablePositionalTracking = true;
-                        //transform.rotation = Quaternion.Inverse(InputTracking.GetLocalRotation(VRNode.));
-                        //transform.Rotate(new Vector3(0, -90, 0));        
-                        
-
-
+                        transform.rotation = startRot * Quaternion.Inverse(InputTracking.GetLocalRotation(VRNode.CenterEye));
                         break;
                     }
 
                 case 2:  // Magnify Motion
                     {
-                        xEuler = OriX;
-                        OriX = trackingInfo.headOriX;
-                        xEuler = OriX - xEuler;
-                        //yEuler = trackingInfo.headOriY;
-                        //zEuler = trackingInfo.headOriZ;
-                        if (xEuler > 180) xEuler = xEuler - 360;
-                        if (xEuler < -180) xEuler = xEuler + 360; 
-                        print("xEuler: " + xEuler);
-                        print("yEuler: " + yEuler);
-                        print("zEuler: " + zEuler);
-                        transform.Rotate(new Vector3(0.6f*xEuler, yEuler, zEuler));
+                        MagnifyOri = 1.5f;     // Magnifying Factor. When MagnifyOri = 1.0f, No Magnification. 
 
+                        xEuler = trackingInfo.headOriX;
+                        if (Counter == 0)
+                        {
+                            xEulerPrevious = trackingInfo.headOriX;
+                            deltaXori_init = xEuler - xEulerPrevious;
+                            if (deltaXori_init > 180)  deltaXori_init = deltaXori_init - 360;
+                            if (deltaXori_init < -180) deltaXori_init = deltaXori_init + 360;
+                        }
+
+                        deltaXori = xEuler - xEulerPrevious;
+                        if (deltaXori > 180) deltaXori = deltaXori - 360;
+                        if (deltaXori <-180) deltaXori = deltaXori + 360;
+                        transform.Rotate(new Vector3( (MagnifyOri - 1.0f) * deltaXori, (MagnifyOri - 1.0f) * yEuler, (MagnifyOri - 1.0f) * zEuler));
+                        xEulerPrevious = xEuler;
+
+                        //print("   xEuler: " + xEuler + "   yEuler: " + yEuler + "   zEuler: " + zEuler);
+                        //print("   MagnifyOri * deltaXori: " + (MagnifyOri * deltaXori));
+                        //print("   deltaXori_init:  " + deltaXori_init);
+
+                        Counter = Counter + 1;
                         break;
                     }
 
-                case 3: // Step-response (5 and 10 deg.)
-                    {                                                
-                        float stepAmp = ToRadian(15.0f);
-                        Stepflag = Stepflag + 1;
-                        print("Step: " + Stepflag);
-                        if (Stepflag>5 && Stepflag<15)                        
-                            { 
-                            xEuler = -stepAmp;
-                            transform.Rotate(new Vector3(xEuler, yEuler, zEuler));
-                            }
-                        if (Stepflag>25 && Stepflag<35)
-                            {
-                            xEuler = stepAmp;
-                            transform.Rotate(new Vector3(xEuler, yEuler, zEuler));
-                            }
-                        
+                case 3: // Step-response (5 - 10 - 15 deg.)
+                    {
+                        stepTimeFrame = stepTimeFrame + 1;
+                        stepAmpilitude = 10.0f; //Degrees
+                        stepStartTimeFrame = 5;
+                        stepEndTimeFrame = 25;
+
+                        if (stepTimeFrame == stepStartTimeFrame)
+                        {
+                            transform.Rotate(new Vector3(-stepAmpilitude, yEuler, zEuler));
+                        }
+
+                        if (stepTimeFrame == stepEndTimeFrame)
+                        {
+                            transform.Rotate(new Vector3(stepAmpilitude, yEuler, zEuler));
+                        }
                         break;
-                        
                     }
 
                 case 4: //Sinusoidal Perturbations
                     {
-                        float degAmplitude = ToRadian(15.0f); //In degrees  
-                        float degSpeed = 2 * (3.14f / 10.0f); //full cycle in 20 sec
-                        //xEuler = degAmplitude * (float)Math.Sin(ToRadian(degSpeed * Time.time));
-                        xEuler = degAmplitude * (3.14f / 10.0f) * (float)Math.Sin(degSpeed * Time.time);
-                        print("Angle: " + xEuler);                        
-                        print("Time:" + Time.time);
-                        transform.Rotate(new Vector3(xEuler, yEuler, zEuler));
+                        Amplitude = 15.0f;
+                        frequency = 2;    // degree per second
+                        
+                        if (Counter == 0)
+                        {
+                            xEulerInit = trackingInfo.headOriX;
+                            xEulerPrevious = xEulerInit;
+                        }
+
+                        xEuler = xEulerInit + (Amplitude * (float)Math.Sin(frequency * (Time.time - Time_0)));
+
+                        deltaXori = (xEuler - xEulerPrevious);
+                        if (deltaXori > 180) deltaXori = deltaXori - 360;
+                        if (deltaXori < -180) deltaXori = deltaXori + 360;
+                        transform.Rotate(new Vector3( deltaXori,  yEuler, zEuler));
+                        xEulerPrevious = xEuler;
+
+                        ////MCCDAQ.writeWaveForm(4, 1, 5.0f, 0.1f, Time.time - Time_0);
+
+                        Counter = Counter + 1;
+                        break;
+                    }
+
+                case 5: //PRBS
+                    {
+                        Counter = Counter + 1;
+                        prbsAmpilitude = 10.0f; //Degrees
+                        prbsTimeFrame = 10;
+
+                        if (Counter % prbsTimeFrame == 0)  //done at each prbsTimeFrame
+                        {
+                            if (iCount < prbsRes.Length)
+                            {
+                                char prbsElement = prbsRes[iCount];
+                                PrbsElementInt = Convert.ToInt32(new string(prbsElement, 1));
+                                print("PrbsElementInt:  " + PrbsElementInt);
+
+                                if (PrbsElementInt == 1)
+                                {
+                                    if (previousPrbsElementInt == 0)
+                                    {
+                                        transform.Rotate(new Vector3(-prbsAmpilitude, yEuler, zEuler));
+                                    }
+                                }
+
+                                if (PrbsElementInt == 0)
+                                {
+                                    if (previousPrbsElementInt == 1)
+                                    {
+                                        transform.Rotate(new Vector3(prbsAmpilitude, yEuler, zEuler));
+                                    }
+                                }
+                                previousPrbsElementInt = PrbsElementInt;
+                                iCount = iCount + 1;
+                            }
+                        }
                         break;
                     }
             }
 
         }
     }	
-	        public float ToDegree(float theta)
+        public float ToDegree(float theta)
         {
             float x = theta * (180.0f / 3.14f);
             return x;
@@ -128,5 +204,50 @@ public class CamRotation1 : MonoBehaviour {
             float theta = xx * (3.14f / 180.0f);
             return theta;
         }
-	
+
+    public string PRBS_General()
+    {
+        var polynomial = "1100000";
+        //"1100000" = x^7+x^6+1
+        //"10100" = x^5+x^3+1
+        //"110" = x^3+x^2+1
+        var start_state = 0x1;  /* Any nonzero start state will work. */
+
+        var taps = Convert.ToInt32(polynomial, 2);
+        var lfsr = start_state;
+        var period = 0;
+        var prbs = "";
+
+        do
+        {
+            var lsb = lfsr & 1;  /* Get LSB (i.e., the output bit). */
+            prbs = prbs + lsb;
+            lfsr >>= 1;          /* Shift register */
+            if (lsb == 1)
+            {      /* Only apply toggle mask if output bit is 1. */
+                lfsr ^= taps;      /* Apply toggle mask, value has 1 at bits corresponding to taps, 0 elsewhere. */
+            }
+            ++period;
+        } while (lfsr != start_state);
+        print("period = " + period);
+        print("prbs = " + prbs);
+
+        //var prbsInt = Convert.ToInt32(prbs, 2);
+        //print("prbsInt =   " + prbsInt);
+
+        if (period == Math.Pow(2, polynomial.Length) - 1)
+        {
+            print("polynomial is maximal length");
+        }
+        else
+        {
+            print("polynomial is not maximal length");
+        }
+
+        return prbs;
+
+    }
+
+
+
 }
